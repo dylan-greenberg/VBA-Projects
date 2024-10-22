@@ -1,0 +1,1558 @@
+Public ReportStartDate As String
+Public ReportEndDate As String
+Public FolderPath As String
+
+Sub CreateFNMSDetailsSheet()
+    Dim SavePath As String
+    Dim PVUReport As Workbook
+    Dim CloudPakReport As Workbook
+    Dim VPCReport As Workbook
+    Dim FolderDialog As FileDialog
+    Dim SaveDialog As FileDialog
+    Dim FilePath As String
+    Dim rawDataWs As Worksheet
+    
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+    
+    ' Set up the folder dialog to select the folder
+    Set FolderDialog = Application.FileDialog(msoFileDialogFolderPicker)
+    
+    With FolderDialog
+        .Title = "Select Folder with CSV Files"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            FolderPath = .SelectedItems(1) & "\"
+        Else
+            MsgBox "No folder selected. Exiting...", vbExclamation
+            Exit Sub
+        End If
+    End With
+
+    ' Open the PVU Consumption Report
+    Set PVUReport = Workbooks.Open(FolderPath & "IBM_PVU_Consumption_Report.csv")
+    
+        ' Check if the VPC Consumption Report exists
+    FilePath = FolderPath & "IBM_VPC_Consumption_Report.csv"
+    If Dir(FilePath) <> "" Then
+        Set VPCReport = Workbooks.Open(FilePath)
+        VPCReport.Sheets(1).Copy After:=PVUReport.Sheets(PVUReport.Sheets.Count)
+        PVUReport.Sheets(PVUReport.Sheets.Count).Name = "VPC Consumption Report"
+        VPCReport.Close SaveChanges:=False
+    End If
+    
+    ' Check if the Cloud Pak Consumption Report exists
+    FilePath = FolderPath & "IBM_Cloud_Pak_Consumption_Report.csv"
+    If Dir(FilePath) <> "" Then
+        Set CloudPakReport = Workbooks.Open(FilePath)
+        CloudPakReport.Sheets(1).Copy After:=PVUReport.Sheets(PVUReport.Sheets.Count)
+        PVUReport.Sheets(PVUReport.Sheets.Count).Name = "Cloud Pak Consumption Report"
+        CloudPakReport.Close SaveChanges:=False
+    End If
+    
+    Call ExtractReportDates
+    
+    For Each Worksheet In Worksheets
+        With Worksheet
+            If .Name = "IBM_PVU_Consumption_Report" Then
+                Worksheet.Activate
+                Set rawDataWs = PVUReport.Sheets(1)
+                Call OneKeepAndReorderColumns_PVU(rawDataWs)
+                Call RemoveAllBorders_PVU(rawDataWs)
+                Call TwoAlternateShadingForUniqueValuesInSpecificColumns_PVU(rawDataWs)
+                Call ThreeInsertTwoUserDates_ALL
+                Call FourAddBordersToDataRange_PVU
+                Call FiveMergeAndCenterCells_PVU
+                Call ApplyBordersToColumns_PVU
+                Call CenterColumnsAndRenameSheet_PVU
+                
+                ElseIf .Name = "VPC Consumption Report" Then
+                Worksheet.Activate
+                Set rawDataWs = PVUReport.Sheets(2)
+                Call OneKeepAndReorderColumns_VPC(rawDataWs)
+                Call TwoAlternateShadingForUniqueValuesInSpecificColumns_VPC(rawDataWs)
+                Call ThreeInsertTwoUserDates_ALL
+                Call FourAddBordersToDataRange_VPC
+                Call FiveMergeAndCenterCells_VPC
+                Call ApplyBordersToColumns_VPC
+                Call CenterColumnsAndRenameSheet_VPC
+                
+            ElseIf .Name = "Cloud Pak Consumption Report" Then
+                Worksheet.Activate
+                Set rawDataWs = PVUReport.Sheets(3)
+                Call OneKeepAndReorderColumns_CloudPak(rawDataWs)
+                Call RemoveAllBorders_CloudPak(rawDataWs)
+                Call TwoAlternateShadingForUniqueValuesInSpecificColumns_CloudPak(rawDataWs)
+                Call ThreeInsertTwoUserDates_ALL
+                Call FourAddBordersToDataRange_CloudPak
+                Call FiveMergeAndCenterCells_CloudPak
+                Call ApplyBordersToColumns_CloudPak
+                Call PivotNewSheet_RenameAndDelete_CloudPak
+            End If
+            On Error Resume Next
+        End With
+    Next
+
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+    
+    currentDate = Format(Date, "YYYY-MM-DD")
+    
+    ' Set up the save dialog to choose the save location
+    Set SaveDialog = Application.FileDialog(msoFileDialogSaveAs)
+    
+    With SaveDialog
+        .Title = "Save the Updated PVU Consumption Report"
+        .InitialFileName = "FNMS_Details_" & currentDate & ".xlsx"
+        If .Show = -1 Then
+            SavePath = .SelectedItems(1)
+        Else
+            MsgBox "No save location selected. Exiting...", vbExclamation
+            PVUReport.Close SaveChanges:=False
+            Exit Sub
+        End If
+    End With
+
+    ' Save the PVU Consumption Report and keep it open
+    PVUReport.SaveAs SavePath, FileFormat:=xlOpenXMLWorkbook
+    
+    
+End Sub
+
+Sub ExtractReportDates()
+    Dim FileNumber As Integer
+    Dim LineText As String
+    Dim LineCount As Integer
+    Dim StartPos As Long
+    Dim EndPos As Long
+
+    ' Define the file path
+    FilePath = FolderPath & "Report_summary.txt"
+    
+    ' Open the text file
+    FileNumber = FreeFile
+    On Error GoTo FileError
+    Open FilePath For Input As FileNumber
+    
+    ' Initialize line count
+    LineCount = 0
+    
+    ' Read the file line by line
+    Do While Not EOF(FileNumber)
+        LineCount = LineCount + 1
+        Line Input #FileNumber, LineText
+        
+        If LineCount = 5 Then
+            ' Extract start date
+            StartPos = InStr(LineText, "Period from: ") + Len("Period from: ")
+            ReportStartDate = Trim(Mid(LineText, StartPos))
+        ElseIf LineCount = 6 Then
+            ' Extract end date
+            EndPos = InStr(LineText, "Period to: ") + Len("Period to: ")
+            ReportEndDate = Trim(Mid(LineText, EndPos))
+            Exit Do ' Exit the loop once both dates are found
+        End If
+    Loop
+    
+    ' Close the file
+    Close FileNumber
+    
+    Exit Sub
+    
+FileError:
+    MsgBox "Error opening or reading the file. Please ensure the file exists and is accessible.", vbExclamation
+    Close FileNumber
+End Sub
+
+
+Sub OneKeepAndReorderColumns_PVU(ws As Worksheet)
+    Dim colOrder As Variant
+    Dim i As Long, col As Long
+    Dim foundColumn As Long
+    Dim lastColumn As Long
+    Dim keepColumns As Variant
+    Dim found As Boolean
+
+    colOrder = Array("License - License name", "License - License consumption", "Host - Host name", _
+                     "Host - Processor type", "Host - Processors", "Host - PVU per core", _
+                     "Host - Physical server CPU core sub-capacity limit", "Host - Physical server CPU core sub-capacity", _
+                     "Host - Physical server PVU sub-capacity limit", "Host - Physical server PVU sub-capacity", _
+                     "Inventory device - Computer", "Inventory device - Domain name", "Inventory device - Cores", _
+                     "Inventory device - Computer deleted", "Inventory device - Operating system", _
+                     "Inventory device - IP address", "Inventory device - Inventory source", _
+                     "Inventory device - Last inventory date", "Inventory device - Exemption reason", "Inventory device - Allocated", _
+                     "Application - Application name", "Application - Primary")
+                     
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+    
+    'keep selected columns
+    lastColumn = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column ' Get last used column
+    keepColumns = colOrder ' Use the same array for columns to keep
+    
+    For col = lastColumn To 1 Step -1 ' Iterate from right to left
+        found = False
+        For i = LBound(keepColumns) To UBound(keepColumns)
+            If ws.Cells(1, col).Value = keepColumns(i) Then
+                found = True
+                Exit For
+            End If
+        Next i
+        If Not found Then
+            ws.Columns(col).Delete
+        End If
+    Next col
+
+    ' Reorder columns to the specified order
+    For i = LBound(colOrder) To UBound(colOrder)
+        foundColumn = 0
+        On Error Resume Next
+        foundColumn = Application.Match(colOrder(i), ws.Rows(1), 0)
+        On Error GoTo 0
+        If foundColumn > 0 Then
+            If foundColumn <> i + 1 Then
+                ws.Columns(foundColumn).Cut
+                ws.Columns(i + 1).Insert Shift:=xlToRight
+            End If
+        End If
+    Next i
+
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+
+End Sub
+
+
+Sub TwoAlternateShadingForUniqueValuesInSpecificColumns_PVU(ws As Worksheet)
+    Dim lastRow As Long
+    Dim currentRow As Long
+    Dim currentCol As Long
+    Dim currentValue As Variant
+    Dim previousValue As Variant
+    Dim shadingIndex As Integer
+    Dim columnsToFormat As Variant
+    Dim i As Integer
+    Dim sourceColumns As Variant
+    Dim targetColumns As Variant
+
+    ' Find the last row with data
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+
+    ' Specify the columns to format (A, C, K, U)
+    columnsToFormat = Array(1, 3, 11, 21)
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Loop through each specified column
+    For i = LBound(columnsToFormat) To UBound(columnsToFormat)
+        currentCol = columnsToFormat(i)
+        previousValue = ""
+        shadingIndex = 0 ' 0 = no shading, 1 = shading
+        
+        ' Read data into an array for faster processing
+        Dim data As Variant
+        data = ws.Range(ws.Cells(1, currentCol), ws.Cells(lastRow, currentCol)).Value
+
+        ' Process each cell in the current column
+        For currentRow = 2 To lastRow
+            currentValue = data(currentRow, 1)
+            If currentValue <> previousValue Then
+                shadingIndex = 1 - shadingIndex
+                previousValue = currentValue
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).LineStyle = xlContinuous
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).color = RGB(0, 0, 0)
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).TintAndShade = 0
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).Weight = xlThin
+            Else
+                ws.Cells(currentRow, currentCol).Font.color = RGB(191, 191, 191)
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+            End If
+            If shadingIndex = 1 Then
+                ws.Cells(currentRow, currentCol).Interior.color = RGB(217, 217, 217)
+            Else
+                ws.Cells(currentRow, currentCol).Interior.ColorIndex = xlNone
+            End If
+        Next currentRow
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("A")
+    targetColumns = Array("B")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("C")
+    targetColumns = Array("D", "E", "F", "G", "H", "I", "J")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("K")
+    targetColumns = Array("L", "M", "N", "O", "P", "Q", "R", "S", "T")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("U")
+    targetColumns = Array("V")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' Basic formatting for the sheet
+    ' Insert a column to the left of column A with a size of 26 pixels
+    ws.Columns("A").Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    ws.Columns("A").ColumnWidth = 2.71 ' Approximately 26 pixels
+    
+    ' Insert 6 rows above row 1
+    ws.Rows("1:6").Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+    
+    ' Add thick bottom border to row 2, columns B to W
+    With ws.Range("B2:W2")
+        .Merge
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Value = "IBM PVU License Consumption"
+        .Font.Bold = True
+        .Font.Size = 12
+        .Font.color = RGB(50, 101, 126)
+        .RowHeight = 46
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).color = RGB(0, 0, 0) ' Black color
+        .Borders(xlEdgeBottom).TintAndShade = 0
+        .Borders(xlEdgeBottom).Weight = xlThick
+    End With
+    
+    ' Fill the background from column B to W in row 6 with color #D5D9DD
+    ws.Range("B6:W6").Interior.color = RGB(213, 217, 221) ' #D5D9DD
+    
+    ' In row 7, from column B to W, change the fill color, font size, row height, alignment, and font color
+    With ws.Range("B7:W7")
+        .Interior.color = RGB(50, 101, 126) ' #32657E
+        .Font.Size = 12
+        .Font.color = RGB(255, 255, 255) ' White
+        .RowHeight = 40 ' Approximately 40 pixels
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' AutoFit the columns in the specified range
+    ws.Range("B7:W7").Columns.AutoFit
+    
+    ' Now add the border to a specific range
+    Dim rng As Range
+    Set rng = ws.Range("B6:W6") ' Specify your range here
+    
+    ' Adding outside borders to the range
+    With rng.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.WrapText = True
+    End With
+    
+    ActiveWindow.FreezePanes = False
+    
+    ActiveWindow.SplitColumn = 3
+    ActiveWindow.SplitRow = 7
+    
+    ActiveWindow.FreezePanes = True
+    
+    ActiveWindow.DisplayGridlines = False
+    
+    ' Clean up
+    Set ws = Nothing
+
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+
+Sub FourAddBordersToDataRange_PVU()
+    Dim lastRow As Long, lastCol As Long
+    Dim startRow As Long
+    Dim col As Long, row As Long
+    Dim ws As Worksheet
+    Dim targetRange As Range
+    Dim finalName As String
+    
+    Set ws = ActiveSheet
+
+    finalName = "Deployment Details - PVU"
+    ws.Name = finalName
+
+    On Error GoTo CleanExit ' Error handling to ensure screen updates and calculations are reset
+
+    ' Starting row
+    startRow = 7
+
+    ' Find the last row with data starting from row 7
+    lastRow = ws.Cells(ws.Rows.Count, 2).End(xlUp).row
+
+    ' Find the last column with data starting from row 7
+    lastCol = ws.Cells(startRow, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Exit if there are no rows with data beyond the start row
+    If lastRow < startRow Or lastCol < 2 Then GoTo CleanExit
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Add left border to the leftmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, 2).Value <> "" Then
+            With ws.Cells(row, 2).Borders(xlEdgeLeft)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    ' Add right border to the rightmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, lastCol).Value <> "" Then
+            With ws.Cells(row, lastCol).Borders(xlEdgeRight)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    Set targetRange = ws.Range("B" & lastRow & ":V" & lastRow)
+
+    ' Add bottom border to the bottommost row with data
+    With targetRange.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+
+CleanExit:
+    ' Reset application settings
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+Sub ThreeInsertTwoUserDates_ALL()
+    Dim ws As Worksheet
+    
+    Set ws = ActiveSheet
+    
+    ' Insert labels into cells B4 and B5
+    ws.Cells(4, "B").Value = "Report Start Date:"
+    ws.Cells(5, "B").Value = "Report End Date:"
+    
+    ws.Cells(4, "C").Value = CDate(ReportStartDate)
+    ws.Cells(5, "C").Value = CDate(ReportEndDate)
+    
+    ' Align labels to the right
+    ws.Cells(4, "B").HorizontalAlignment = xlRight
+    ws.Cells(5, "B").HorizontalAlignment = xlRight
+    
+    ' Align dates to the left
+    ws.Cells(4, "C").HorizontalAlignment = xlLeft
+    ws.Cells(5, "C").HorizontalAlignment = xlLeft
+    
+End Sub
+
+Sub FiveMergeAndCenterCells_PVU()
+    Dim mergeRange As Range
+    On Error Resume Next ' Enable error handling
+    Dim ws As Worksheet
+
+    Set ws = ActiveSheet
+    
+    ' Merge and center cells B6:C6 with text "Product Details"
+    Set mergeRange = ws.Range("B6:C6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Product Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells D6:K6 with text "Server Details"
+    Set mergeRange = ws.Range("D6:K6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Server Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells L6:U6 with text "Computer Details"
+    Set mergeRange = ws.Range("L6:U6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Computer Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells V6:W6 with text "Software Details"
+    Set mergeRange = ws.Range("V6:W6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Software Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    On Error GoTo 0 ' Disable error handling
+End Sub
+
+Sub ApplyLeftBorderToColumn_PVU(columnLetter As String, startRow As Long)
+    Dim lastRow As Long
+    Dim targetRange As Range
+    Dim ws As Worksheet
+    
+    Set ws = ActiveSheet
+
+    ' Find the last row in the specified column
+    lastRow = ws.Cells(ws.Rows.Count, columnLetter).End(xlUp).row
+    
+    ' Set the target range
+    Set targetRange = ws.Range(columnLetter & startRow & ":" & columnLetter & lastRow)
+    
+    ' Apply right border to the target range
+    targetRange.Borders(xlEdgeLeft).LineStyle = xlContinuous
+End Sub
+
+Sub ApplyBordersToColumns_PVU()
+    ApplyLeftBorderToColumn_PVU "D", 8
+    ApplyLeftBorderToColumn_PVU "L", 8
+    ApplyLeftBorderToColumn_PVU "V", 8
+End Sub
+
+
+Sub RemoveAllBorders_PVU(newWs)
+    Dim ws As Worksheet
+    Dim cell As Range
+    
+    ' Reference the active worksheet
+    Set ws = ActiveSheet
+    
+    ' Loop through each cell in the worksheet
+    For Each cell In ws.UsedRange
+        ' Clear the borders of the cell
+        cell.Borders.LineStyle = xlNone
+    Next cell
+End Sub
+
+Sub CenterColumnsAndRenameSheet_PVU()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim col As Range
+    Dim columnsToCenter As Variant
+    Dim i As Integer
+    
+    ' Define the active worksheet
+    Set ws = ActiveSheet
+    
+    ' Define the columns to center
+    columnsToCenter = Array("C", "F", "G", "H", "I", "J", "K", "N", "O", "U", "W") ' Update with your specific columns
+
+    ' Find the last row with data
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).row
+    
+    ' Loop through the defined columns and center align them
+    For i = LBound(columnsToCenter) To UBound(columnsToCenter)
+        Set col = ws.Range(columnsToCenter(i) & "8:" & columnsToCenter(i) & lastRow)
+        col.HorizontalAlignment = xlCenter
+    Next i
+
+    ' Rename the worksheet
+    ws.Name = "Deployment Details - PVU"
+End Sub
+
+Sub OneKeepAndReorderColumns_CloudPak(ws As Worksheet)
+    Dim colOrder As Variant
+    Dim i As Long, col As Long
+    Dim foundColumn As Long
+    Dim lastColumn As Long
+    Dim keepColumns As Variant
+    Dim found As Boolean
+    
+    colOrder = Array("License - License name", "License - License version", "License - License consumption", _
+        "Product - Product name", "Product - Product peak consumption", "Product - Product peak metric quantity", _
+        "Product - Metric type", "Product - Product conversion ratio", "Container cluster - Cluster name", _
+        "Container cluster - Cluster peak consumption", "Host - Host manufacturer", "Host - Host model", _
+        "Host - Host name", "Host - Processors", "Host - Processor type", "Host - Physical server CPU core sub-capacity limit", _
+        "Host - Physical server CPU core sub-capacity", "Host - Host consumption", "Host - Host licensing", _
+        "Inventory device - Cores", "Host - Computer type", "Inventory device - Computer", "Inventory device - Domain name", _
+        "Inventory device - Computer deleted", "Inventory device - Operating system", "Inventory device - IP address", _
+        "Inventory device - Inventory source", "Inventory device - Last inventory date", "Inventory device - Allocated", _
+        "Inventory device - Exempted", "Inventory device - Exemption reason", "Inventory device - Eligible for sub-capacity", _
+        "Application - Application name", "Application - Primary", "Application - Edition")
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+    
+    'keep selected columns
+    lastColumn = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column ' Get last used column
+    keepColumns = colOrder ' Use the same array for columns to keep
+    
+    For col = lastColumn To 1 Step -1 ' Iterate from right to left
+        found = False
+        For i = LBound(keepColumns) To UBound(keepColumns)
+            If ws.Cells(1, col).Value = keepColumns(i) Then
+                found = True
+                Exit For
+            End If
+        Next i
+        If Not found Then
+            ws.Columns(col).Delete
+        End If
+    Next col
+
+    ' Reorder columns to the specified order
+    For i = LBound(colOrder) To UBound(colOrder)
+        foundColumn = 0
+        On Error Resume Next
+        foundColumn = Application.Match(colOrder(i), ws.Rows(1), 0)
+        On Error GoTo 0
+        If foundColumn > 0 Then
+            If foundColumn <> i + 1 Then
+                ws.Columns(foundColumn).Cut
+                ws.Columns(i + 1).Insert Shift:=xlToRight
+            End If
+        End If
+    Next i
+    
+
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+
+End Sub
+
+
+Sub TwoAlternateShadingForUniqueValuesInSpecificColumns_CloudPak(ws As Worksheet)
+    Dim lastRow As Long
+    Dim currentRow As Long
+    Dim currentCol As Long
+    Dim currentValue As Variant
+    Dim previousValue As Variant
+    Dim shadingIndex As Integer
+    Dim columnsToFormat As Variant
+    Dim i As Integer
+    Dim sourceColumns As Variant
+    Dim targetColumns As Variant
+    Dim col As Variant
+
+    ' Find the last row with data
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+
+    ' Specify the columns to format (A, K, V, AG)
+    columnsToFormat = Array(1, 11, 22, 33)
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Loop through each specified column
+    For i = LBound(columnsToFormat) To UBound(columnsToFormat)
+        currentCol = columnsToFormat(i)
+        previousValue = ""
+        shadingIndex = 0 ' 0 = no shading, 1 = shading
+        
+        ' Read data into an array for faster processing
+        Dim data As Variant
+        data = ws.Range(ws.Cells(1, currentCol), ws.Cells(lastRow, currentCol)).Value
+
+        ' Process each cell in the current column
+        For currentRow = 2 To lastRow
+            currentValue = data(currentRow, 1)
+            If currentValue <> previousValue Then
+                shadingIndex = 1 - shadingIndex
+                previousValue = currentValue
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).LineStyle = xlContinuous
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).color = RGB(0, 0, 0)
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).TintAndShade = 0
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).Weight = xlThin
+            Else
+                ws.Cells(currentRow, currentCol).Font.color = RGB(191, 191, 191)
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+            End If
+            If shadingIndex = 1 Then
+                ws.Cells(currentRow, currentCol).Interior.color = RGB(217, 217, 217)
+            Else
+                ws.Cells(currentRow, currentCol).Interior.ColorIndex = xlNone
+            End If
+        Next currentRow
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("A")
+    targetColumns = Array("B", "C", "D", "E", "F", "G", "H", "I", "J")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("K")
+    targetColumns = Array("L", "M", "N", "O", "P", "Q", "R", "S", "T", "U")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("V")
+    targetColumns = Array("W", "X", "Y", "Z", "AA", "AB", "AC", "AD", "AE", "AF")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("AG")
+    targetColumns = Array("AH", "AI")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' Basic formatting for the sheet
+    ' Insert a column to the left of column A with a size of 26 pixels
+    ws.Columns("A").Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    ws.Columns("A").ColumnWidth = 2.71 ' Approximately 26 pixels
+    
+    ' Insert 6 rows above row 1
+    ws.Rows("1:6").Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+    
+    ' Add thick bottom border to row 2, columns B to W
+    With ws.Range("B2:AJ2")
+        .Merge
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Value = "IBM Cloud Pak License Consumption"
+        .Font.Bold = True
+        .Font.Size = 12
+        .Font.color = RGB(50, 101, 126)
+        .RowHeight = 46
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).color = RGB(0, 0, 0) ' Black color
+        .Borders(xlEdgeBottom).TintAndShade = 0
+        .Borders(xlEdgeBottom).Weight = xlThick
+    End With
+    
+    ' Fill the background from column B to W in row 6 with color #D5D9DD
+    ws.Range("B6:AJ6").Interior.color = RGB(213, 217, 221) ' #D5D9DD
+    
+    ' In row 7, from column B to W, change the fill color, font size, row height, alignment, and font color
+    With ws.Range("B7:AJ7")
+        .Interior.color = RGB(50, 101, 126) ' #32657E
+        .Font.Size = 12
+        .Font.color = RGB(255, 255, 255) ' White
+        .RowHeight = 40 ' Approximately 40 pixels
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' AutoFit the columns in the specified range
+    ws.Range("B7:AJ7").Columns.AutoFit
+    
+    ' Now add the border to a specific range
+    Dim rng As Range
+    Set rng = ws.Range("B6:AJ6") ' Specify your range here
+    
+    ' Adding outside borders to the range
+    With rng.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.WrapText = True
+    End With
+    
+    ActiveWindow.FreezePanes = False
+    
+    ActiveWindow.SplitColumn = 4
+    ActiveWindow.SplitRow = 7
+    
+    ActiveWindow.FreezePanes = True
+    
+    ActiveWindow.DisplayGridlines = False
+    
+    ' Clean up
+    Set ws = Nothing
+
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+
+Sub FourAddBordersToDataRange_CloudPak()
+    Dim lastRow As Long, lastCol As Long
+    Dim startRow As Long
+    Dim col As Long, row As Long
+    Dim ws As Worksheet
+    Dim targetRange As Range
+    
+    Set ws = ActiveSheet
+
+    On Error GoTo CleanExit ' Error handling to ensure screen updates and calculations are reset
+
+    ' Starting row
+    startRow = 7
+
+    ' Find the last row with data starting from row 7
+    lastRow = ws.Cells(ws.Rows.Count, 2).End(xlUp).row
+
+    ' Find the last column with data starting from row 7
+    lastCol = ws.Cells(startRow, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Exit if there are no rows with data beyond the start row
+    If lastRow < startRow Or lastCol < 2 Then GoTo CleanExit
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Add left border to the leftmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, 2).Value <> "" Then
+            With ws.Cells(row, 2).Borders(xlEdgeLeft)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    ' Add right border to the rightmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, lastCol).Value <> "" Then
+            With ws.Cells(row, lastCol).Borders(xlEdgeRight)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    Set targetRange = ws.Range("B" & lastRow & ":AF" & lastRow)
+
+    ' Add bottom border to the bottommost row with data
+    With targetRange.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+
+CleanExit:
+    ' Reset application settings
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+Sub FiveMergeAndCenterCells_CloudPak()
+    Dim mergeRange As Range
+    On Error Resume Next ' Enable error handling
+    Dim ws As Worksheet
+
+    Set ws = ActiveSheet
+    
+    ' Merge and center cells B6:K6 with text "Product Details"
+    Set mergeRange = ws.Range("B6:K6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Product Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells L6:V6 with text "Server Details"
+    Set mergeRange = ws.Range("L6:V6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Server Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells W6:AG6 with text "Computer Details"
+    Set mergeRange = ws.Range("W6:AG6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Computer Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells V6:W6 with text "Software Details"
+    Set mergeRange = ws.Range("AH6:AJ6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Software Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    On Error GoTo 0 ' Disable error handling
+End Sub
+
+Sub ApplyLeftBorderToColumn_CloudPak(columnLetter As String, startRow As Long)
+    Dim lastRow As Long
+    Dim targetRange As Range
+    Dim ws As Worksheet
+    
+    Set ws = ActiveSheet
+
+    ' Find the last row in the specified column
+    lastRow = ws.Cells(ws.Rows.Count, columnLetter).End(xlUp).row
+    
+    ' Set the target range
+    Set targetRange = ws.Range(columnLetter & startRow & ":" & columnLetter & lastRow)
+    
+    ' Apply right border to the target range
+    targetRange.Borders(xlEdgeLeft).LineStyle = xlContinuous
+End Sub
+
+Sub ApplyBordersToColumns_CloudPak()
+    ApplyLeftBorderToColumn_CloudPak "L", 8
+    ApplyLeftBorderToColumn_CloudPak "W", 8
+    ApplyLeftBorderToColumn_CloudPak "AH", 8
+End Sub
+
+Sub RemoveAllBorders_CloudPak(newWs)
+    Dim ws As Worksheet
+    Dim cell As Range
+    
+    ' Reference the active worksheet
+    Set ws = ActiveSheet
+    
+    ' Loop through each cell in the worksheet
+    For Each cell In ws.UsedRange
+        ' Clear the borders of the cell
+        cell.Borders.LineStyle = xlNone
+    Next cell
+End Sub
+
+Sub PivotNewSheet_RenameAndDelete_CloudPak()
+    On Error Resume Next
+    Dim lastColumn As Long
+    Dim lastRow As Long
+    Dim dataRange As Range
+    Dim ws As Worksheet
+    Dim copiedWs As Worksheet
+    Dim newWs As Worksheet
+    Dim originalSheetName As String
+    Dim tempSheetName As String
+    Dim finalSheetName As String
+    
+    ' Set the active worksheet
+    Set ws = ActiveSheet
+    
+    ' Store the original sheet name
+    originalSheetName = ws.Name
+    tempSheetName = "TempSheet" ' Name for the copied sheet
+    finalSheetName = "Deployment Details - Cloud Pak" ' New name for the original sheet after processing
+
+    ' Copy the entire worksheet
+    ws.Copy After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count)
+    Set copiedWs = ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count)
+    
+    ' Rename the copied sheet
+    copiedWs.Name = tempSheetName
+    
+    ' Determine the last row and column of the data range in the copied sheet
+    lastRow = copiedWs.Cells(copiedWs.Rows.Count, 2).End(xlUp).row
+    lastColumn = copiedWs.Cells(7, copiedWs.Columns.Count).End(xlToLeft).Column
+    
+    ' Define the data range in the copied sheet
+    Set dataRange = copiedWs.Range(copiedWs.Cells(7, 2), copiedWs.Cells(lastRow, lastColumn))
+    
+    ' Create a table from the data range in the copied sheet
+    copiedWs.ListObjects.Add(xlSrcRange, dataRange, , xlYes).Name = "Table1"
+    
+    ' Add a new worksheet for the pivot table
+    Set newWs = ActiveWorkbook.Worksheets.Add
+    newWs.Name = "PivotTableSheet" ' You can change the name as needed
+    
+    ' Create a pivot cache and pivot table based on the table in the copied sheet
+    ActiveWorkbook.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=tempSheetName & "!Table1", Version:=7).CreatePivotTable _
+        TableDestination:=newWs.Cells(1, 1), TableName:="PivotTable1", DefaultVersion:=7
+    
+    With newWs.PivotTables("PivotTable1").pivotCache
+        .RefreshOnFileOpen = False
+        .MissingItemsLimit = xlMissingItemsDefault
+    End With
+    
+    newWs.PivotTables("PivotTable1").RepeatAllLabels xlDoNotRepeatLabels
+    
+    With newWs.PivotTables("PivotTable1")
+        .RowAxisLayout xlTabularRow
+        .PivotFields("Metric").Orientation = xlRowField
+        .PivotFields("Metric").Position = 1
+        .PivotFields("Product Name").Orientation = xlRowField
+        .PivotFields("Product Name").Position = 2
+        .PivotFields("License - License name").Orientation = xlRowField
+        .PivotFields("Product - Product name").Orientation = xlRowField
+        .PivotFields("Product - metric type").Orientation = xlRowField
+        .PivotFields("Product - Product conversion ratio").Orientation = xlRowField
+        .PivotFields("License - License consumption").Orientation = xlRowField
+        .PivotFields("Product - Product peak consumption").Orientation = xlRowField
+        .PivotFields("Product - Product peak metric quantity").Orientation = xlRowField
+
+        ' Remove subtotals
+        .PivotFields("License - License name").Subtotals(1) = False
+        .PivotFields("License - License consumption").Subtotals(1) = False
+        .PivotFields("Product - Product name").Subtotals(1) = False
+        .PivotFields("Product - Product peak consumption").Subtotals(1) = False
+        .PivotFields("Product - Product peak metric quantity").Subtotals(1) = False
+        .PivotFields("Product - metric type").Subtotals(1) = False
+        .PivotFields("Product - Product conversion ratio").Subtotals(1) = False
+    End With
+    
+    ' Delete the copied sheet after creating the pivot table
+    Application.DisplayAlerts = False ' Disable alerts to prevent confirmation dialog
+    copiedWs.Delete
+    Application.DisplayAlerts = True ' Re-enable alerts
+    
+    ' Rename the original sheet at the end
+    ws.Name = finalSheetName
+    
+End Sub
+
+Sub OneKeepAndReorderColumns_VPC(ws As Worksheet)
+    Dim colOrder As Variant
+    Dim i As Long, col As Long
+    Dim foundColumn As Long
+    Dim lastColumn As Long
+    Dim keepColumns As Variant
+    Dim found As Boolean
+
+    colOrder = Array("License - License name", "License - License version", "License - License consumption", _
+        "Region - VPC conversion ratio", "Container cluster - Cluster name", "Container cluster - Cluster peak consumption", _
+        "Host - Host manufacturer", "Host - Host model", "Host - Host name", "Host - Processors", "Host - Processor type", _
+        "Host - Physical server CPU core sub-capacity limit", "Host - Physical server CPU core sub-capacity", "Host - Host consumption", _
+        "Host - Host licensing", "Inventory device - Cores", "Host - Computer type", "Inventory device - Computer", _
+        "Inventory device - Domain name", "Inventory device - Computer deleted", "Inventory device - Operating system", _
+        "Inventory device - IP address", "Inventory device - Inventory source", "Inventory device - Last inventory date", _
+        "Inventory device - Allocated", "Inventory device - Exempted", "Inventory device - Exemption reason", _
+        "Inventory device - Eligible for sub-capacity", "Application - Application name", "Application - Primary", _
+        "Application - Edition")
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+    
+    'keep selected columns
+    lastColumn = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column ' Get last used column
+    keepColumns = colOrder ' Use the same array for columns to keep
+    
+    For col = lastColumn To 1 Step -1 ' Iterate from right to left
+        found = False
+        For i = LBound(keepColumns) To UBound(keepColumns)
+            If ws.Cells(1, col).Value = keepColumns(i) Then
+                found = True
+                Exit For
+            End If
+        Next i
+        If Not found Then
+            ws.Columns(col).Delete
+        End If
+    Next col
+
+    ' Reorder columns to the specified order
+    For i = LBound(colOrder) To UBound(colOrder)
+        foundColumn = 0
+        On Error Resume Next
+        foundColumn = Application.Match(colOrder(i), ws.Rows(1), 0)
+        On Error GoTo 0
+        If foundColumn > 0 Then
+            If foundColumn <> i + 1 Then
+                ws.Columns(foundColumn).Cut
+                ws.Columns(i + 1).Insert Shift:=xlToRight
+            End If
+        End If
+    Next i
+
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+
+End Sub
+
+
+Sub TwoAlternateShadingForUniqueValuesInSpecificColumns_VPC(ws As Worksheet)
+    Dim lastRow As Long
+    Dim currentRow As Long
+    Dim currentCol As Long
+    Dim currentValue As Variant
+    Dim previousValue As Variant
+    Dim shadingIndex As Integer
+    Dim columnsToFormat As Variant
+    Dim i As Integer
+    Dim sourceColumns As Variant
+    Dim targetColumns As Variant
+
+    ' Find the last row with data
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+
+    ' Specify the columns to format (A, G, R, AC)
+    columnsToFormat = Array(1, 7, 18, 29)
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Loop through each specified column
+    For i = LBound(columnsToFormat) To UBound(columnsToFormat)
+        currentCol = columnsToFormat(i)
+        previousValue = ""
+        shadingIndex = 0 ' 0 = no shading, 1 = shading
+        
+        ' Read data into an array for faster processing
+        Dim data As Variant
+        data = ws.Range(ws.Cells(1, currentCol), ws.Cells(lastRow, currentCol)).Value
+
+        ' Process each cell in the current column
+        For currentRow = 2 To lastRow
+            currentValue = data(currentRow, 1)
+            If currentValue <> previousValue Then
+                shadingIndex = 1 - shadingIndex
+                previousValue = currentValue
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).LineStyle = xlContinuous
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).color = RGB(0, 0, 0)
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).TintAndShade = 0
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).Weight = xlThin
+            Else
+                ws.Cells(currentRow, currentCol).Font.color = RGB(191, 191, 191)
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+            End If
+            If shadingIndex = 1 Then
+                ws.Cells(currentRow, currentCol).Interior.color = RGB(217, 217, 217)
+            Else
+                ws.Cells(currentRow, currentCol).Interior.ColorIndex = xlNone
+            End If
+        Next currentRow
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("A")
+    targetColumns = Array("B", "C", "D", "E", "F")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("G")
+    targetColumns = Array("H", "I", "J", "K", "L", "M", "N", "O", "P", "Q")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("R")
+    targetColumns = Array("S", "T", "U", "V", "W", "X", "Y", "Z", "AA", "AB")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("AC")
+    targetColumns = Array("AC", "AD", "AE")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' Basic formatting for the sheet
+    ' Insert a column to the left of column A with a size of 26 pixels
+    ws.Columns("A").Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    ws.Columns("A").ColumnWidth = 2.71 ' Approximately 26 pixels
+    
+    ' Insert 6 rows above row 1
+    ws.Rows("1:6").Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+    
+    ' Add thick bottom border to row 2, columns B to W
+    With ws.Range("B2:AF2")
+        .Merge
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Value = "IBM VPC License Consumption"
+        .Font.Bold = True
+        .Font.Size = 12
+        .Font.color = RGB(50, 101, 126)
+        .RowHeight = 46
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).color = RGB(0, 0, 0) ' Black color
+        .Borders(xlEdgeBottom).TintAndShade = 0
+        .Borders(xlEdgeBottom).Weight = xlThick
+    End With
+    
+    ' Fill the background from column B to W in row 6 with color #D5D9DD
+    ws.Range("B6:AF6").Interior.color = RGB(213, 217, 221) ' #D5D9DD
+    
+    ' In row 7, from column B to W, change the fill color, font size, row height, alignment, and font color
+    With ws.Range("B7:AF7")
+        .Interior.color = RGB(50, 101, 126) ' #32657E
+        .Font.Size = 12
+        .Font.color = RGB(255, 255, 255) ' White
+        .RowHeight = 40 ' Approximately 40 pixels
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' AutoFit the columns in the specified range
+    ws.Range("B7:AF7").Columns.AutoFit
+    
+    ' Now add the border to a specific range
+    Dim rng As Range
+    Set rng = ws.Range("B6:AF6") ' Specify your range here
+    
+    ' Adding outside borders to the range
+    With rng.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.WrapText = True
+    End With
+    
+    ActiveWindow.FreezePanes = False
+    
+    ActiveWindow.SplitColumn = 4
+    ActiveWindow.SplitRow = 7
+    
+    ActiveWindow.FreezePanes = True
+    
+    ActiveWindow.DisplayGridlines = False
+    
+    ' Clean up
+    Set ws = Nothing
+
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+
+Sub FourAddBordersToDataRange_VPC()
+    Dim lastRow As Long, lastCol As Long
+    Dim startRow As Long
+    Dim col As Long, row As Long
+    Dim ws As Worksheet
+    Dim targetRange As Range
+    Dim finalName As String
+    
+    Set ws = ActiveSheet
+
+    On Error GoTo CleanExit ' Error handling to ensure screen updates and calculations are reset
+
+    ' Starting row
+    startRow = 7
+
+    ' Find the last row with data starting from row 7
+    lastRow = ws.Cells(ws.Rows.Count, 2).End(xlUp).row
+
+    ' Find the last column with data starting from row 7
+    lastCol = ws.Cells(startRow, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Exit if there are no rows with data beyond the start row
+    If lastRow < startRow Or lastCol < 2 Then GoTo CleanExit
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Add left border to the leftmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, 2).Value <> "" Then
+            With ws.Cells(row, 2).Borders(xlEdgeLeft)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    ' Add right border to the rightmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, lastCol).Value <> "" Then
+            With ws.Cells(row, lastCol).Borders(xlEdgeRight)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    Set targetRange = ws.Range("B" & lastRow & ":V" & lastRow)
+
+    ' Add bottom border to the bottommost row with data
+    With targetRange.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+
+CleanExit:
+    ' Reset application settings
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+Sub FiveMergeAndCenterCells_VPC()
+    Dim mergeRange As Range
+    On Error Resume Next ' Enable error handling
+    Dim ws As Worksheet
+
+    Set ws = ActiveSheet
+    
+    ' Merge and center cells B6:C6 with text "Product Details"
+    Set mergeRange = ws.Range("B6:G6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Product Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells D6:K6 with text "Server Details"
+    Set mergeRange = ws.Range("H6:R6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Server Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells L6:U6 with text "Computer Details"
+    Set mergeRange = ws.Range("S6:AC6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Computer Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells V6:W6 with text "Software Details"
+    Set mergeRange = ws.Range("AD6:AF6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Software Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    On Error GoTo 0 ' Disable error handling
+End Sub
+
+Sub ApplyLeftBorderToColumn_VPC(columnLetter As String, startRow As Long)
+    Dim lastRow As Long
+    Dim targetRange As Range
+    Dim ws As Worksheet
+    
+    Set ws = ActiveSheet
+
+    ' Find the last row in the specified column
+    lastRow = ws.Cells(ws.Rows.Count, columnLetter).End(xlUp).row
+    
+    ' Set the target range
+    Set targetRange = ws.Range(columnLetter & startRow & ":" & columnLetter & lastRow)
+    
+    ' Apply right border to the target range
+    targetRange.Borders(xlEdgeLeft).LineStyle = xlContinuous
+End Sub
+
+Sub ApplyBordersToColumns_VPC()
+    ApplyLeftBorderToColumn_VPC "H", 8
+    ApplyLeftBorderToColumn_VPC "S", 8
+    ApplyLeftBorderToColumn_VPC "AD", 8
+End Sub
+
+Sub CenterColumnsAndRenameSheet_VPC()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim col As Range
+    Dim columnsToCenter As Variant
+    Dim i As Integer
+    
+    ' Define the active worksheet
+    Set ws = ActiveSheet
+    
+    ' Define the columns to center
+    columnsToCenter = Array("C", "D", "G", "K", "M", "N", "O", "P", "Q", "Z", "AA", "AB", "AC", "AC", "AE")
+
+    ' Find the last row with data
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).row
+    
+    ' Loop through the defined columns and center align them
+    For i = LBound(columnsToCenter) To UBound(columnsToCenter)
+        Set col = ws.Range(columnsToCenter(i) & "8:" & columnsToCenter(i) & lastRow)
+        col.HorizontalAlignment = xlCenter
+    Next i
+
+    ' Rename the worksheet
+    ws.Name = "Deployment Details - VPC"
+End Sub
+

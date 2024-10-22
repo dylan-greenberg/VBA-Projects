@@ -1,0 +1,602 @@
+Sub SelectFileAndProcess_PVU()
+    Dim fd As FileDialog
+    Dim selectedFile As String
+    
+    ' Initialize the FileDialog object
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    
+    ' Set dialog properties
+    With fd
+        .Title = "Select a file to process"
+        .Filters.Add "Excel Files", "*.xls; *.xlsx; *.xlsm; *.csv", 1
+        .AllowMultiSelect = False
+    End With
+    
+    ' Show the dialog and get the selected file
+    If fd.Show = -1 Then
+        selectedFile = fd.SelectedItems(1)
+        ' Process the selected file
+        ProcessSelectedFile_PVU selectedFile
+    Else
+        MsgBox "No file selected"
+    End If
+    
+    ' Clean up
+    Set fd = Nothing
+End Sub
+
+Sub ProcessSelectedFile_PVU(FilePath As String)
+    Dim rawDataWb As Workbook
+    Dim rawDataWs As Worksheet
+    Dim fileExtension As String
+    Dim FolderPath As String
+    Dim saveFilePath As String
+    Dim currentDate As String
+    
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+    
+    ' Determine the file extension
+    fileExtension = Right(FilePath, Len(FilePath) - InStrRev(FilePath, "."))
+    
+    ' Open the selected workbook or CSV file
+    If LCase(fileExtension) = "csv" Then
+        ' Open the CSV file
+        Set rawDataWb = Workbooks.Open(FilePath)
+        ' Set the worksheet containing the raw data
+        Set rawDataWs = rawDataWb.Sheets(1)
+    Else
+        ' Open the Excel workbook
+        Set rawDataWb = Workbooks.Open(FilePath)
+        ' Set the worksheet containing the raw data
+        Set rawDataWs = rawDataWb.Sheets(1)
+    End If
+    
+    ' Apply your macros on the selected worksheet
+    Call OneKeepAndReorderColumns_PVU(rawDataWs)
+    Call RemoveAllBorders_PVU(rawDataWs)
+    Call TwoAlternateShadingForUniqueValuesInSpecificColumns_PVU(rawDataWs)
+    Call FourAddBordersToDataRange_PVU
+    Call ThreeInsertTwoUserDates_PVU
+    Call FiveMergeAndCenterCells_PVU
+    Call ApplyBordersToColumns_PVU
+    Call CenterColumnsAndRenameSheet_PVU
+    
+    ' Prompt the user to select a folder to save the processed workbook
+    With Application.FileDialog(msoFileDialogFolderPicker)
+        .Title = "Select Folder to Save the Processed Workbook"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            FolderPath = .SelectedItems(1)
+        Else
+            MsgBox "No folder selected. Operation canceled."
+            rawDataWb.Close False
+            Exit Sub
+        End If
+    End With
+    
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+    
+    currentDate = Format(Date, "YYYY-MM-DD")
+    
+    ' Construct the file path with the desired file name
+    saveFilePath = FolderPath & "\" & "FNMS_PVU_" & currentDate & ".xlsx"
+    
+    ' Save the processed workbook
+    rawDataWb.SaveAs saveFilePath, FileFormat:=xlOpenXMLWorkbook
+    
+    ' Notify the user
+    MsgBox "The processed data has been saved in a new workbook at: " & saveFilePath
+End Sub
+
+
+Sub OneKeepAndReorderColumns_PVU(ws As Worksheet)
+    Dim colOrder As Variant
+    Dim i As Long, col As Long
+    Dim foundColumn As Long
+    Dim lastColumn As Long
+    Dim keepColumns As Variant
+    Dim found As Boolean
+
+    colOrder = Array("License - License name", "License - License consumption", "Host - Host name", _
+                     "Host - Processor type", "Host - Processors", "Host - PVU per core", _
+                     "Host - Physical server CPU core sub-capacity limit", "Host - Physical server CPU core sub-capacity", _
+                     "Host - Physical server PVU sub-capacity limit", "Host - Physical server PVU sub-capacity", _
+                     "Inventory device - Computer", "Inventory device - Domain name", "Inventory device - Cores", _
+                     "Inventory device - Computer deleted", "Inventory device - Operating system", _
+                     "Inventory device - IP address", "Inventory device - Inventory source", _
+                     "Inventory device - Last inventory date", "Inventory device - Exemption reason", "Inventory device - Allocated", _
+                     "Application - Application name", "Application - Primary")
+                     
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+    
+    'keep selected columns
+    lastColumn = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column ' Get last used column
+    keepColumns = colOrder ' Use the same array for columns to keep
+    
+    For col = lastColumn To 1 Step -1 ' Iterate from right to left
+        found = False
+        For i = LBound(keepColumns) To UBound(keepColumns)
+            If ws.Cells(1, col).Value = keepColumns(i) Then
+                found = True
+                Exit For
+            End If
+        Next i
+        If Not found Then
+            ws.Columns(col).Delete
+        End If
+    Next col
+
+    ' Reorder columns to the specified order
+    For i = LBound(colOrder) To UBound(colOrder)
+        foundColumn = 0
+        On Error Resume Next
+        foundColumn = Application.Match(colOrder(i), ws.Rows(1), 0)
+        On Error GoTo 0
+        If foundColumn > 0 Then
+            If foundColumn <> i + 1 Then
+                ws.Columns(foundColumn).Cut
+                ws.Columns(i + 1).Insert Shift:=xlToRight
+            End If
+        End If
+    Next i
+
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+
+    MsgBox "Columns have been reordered."
+End Sub
+
+
+Sub TwoAlternateShadingForUniqueValuesInSpecificColumns_PVU(ws As Worksheet)
+    Dim lastRow As Long
+    Dim currentRow As Long
+    Dim currentCol As Long
+    Dim currentValue As Variant
+    Dim previousValue As Variant
+    Dim shadingIndex As Integer
+    Dim columnsToFormat As Variant
+    Dim i As Integer
+    Dim sourceColumns As Variant
+    Dim targetColumns As Variant
+
+    ' Find the last row with data
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).row
+
+    ' Specify the columns to format (A, C, K, U)
+    columnsToFormat = Array(1, 3, 11, 21)
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Loop through each specified column
+    For i = LBound(columnsToFormat) To UBound(columnsToFormat)
+        currentCol = columnsToFormat(i)
+        previousValue = ""
+        shadingIndex = 0 ' 0 = no shading, 1 = shading
+        
+        ' Read data into an array for faster processing
+        Dim data As Variant
+        data = ws.Range(ws.Cells(1, currentCol), ws.Cells(lastRow, currentCol)).Value
+
+        ' Process each cell in the current column
+        For currentRow = 2 To lastRow
+            currentValue = data(currentRow, 1)
+            If currentValue <> previousValue Then
+                shadingIndex = 1 - shadingIndex
+                previousValue = currentValue
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).LineStyle = xlContinuous
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).color = RGB(0, 0, 0)
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).TintAndShade = 0
+                ws.Cells(currentRow, currentCol).Borders(xlEdgeTop).Weight = xlThin
+            Else
+                ws.Cells(currentRow, currentCol).Font.color = RGB(191, 191, 191)
+                ws.Cells(currentRow, currentCol).Font.Bold = False
+            End If
+            If shadingIndex = 1 Then
+                ws.Cells(currentRow, currentCol).Interior.color = RGB(217, 217, 217)
+            Else
+                ws.Cells(currentRow, currentCol).Interior.ColorIndex = xlNone
+            End If
+        Next currentRow
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("A")
+    targetColumns = Array("B")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("C")
+    targetColumns = Array("D", "E", "F", "G", "H", "I", "J")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("K")
+    targetColumns = Array("L", "M", "N", "O", "P", "Q", "R", "S", "T")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' First set of source and target columns
+    sourceColumns = Array("U")
+    targetColumns = Array("V")
+    
+    ' Loop through the first set of columns and copy formatting
+    For i = LBound(targetColumns) To UBound(targetColumns)
+        Columns(sourceColumns(0)).Copy
+        Columns(targetColumns(i)).PasteSpecial Paste:=xlPasteFormats
+    Next i
+    
+    ' Basic formatting for the sheet
+    ' Insert a column to the left of column A with a size of 26 pixels
+    ws.Columns("A").Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    ws.Columns("A").ColumnWidth = 2.71 ' Approximately 26 pixels
+    
+    ' Insert 6 rows above row 1
+    ws.Rows("1:6").Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+    
+    ' Add thick bottom border to row 2, columns B to W
+    With ws.Range("B2:W2")
+        .Merge
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .Value = "IBM PVU License Consumption"
+        .Font.Bold = True
+        .Font.Size = 12
+        .Font.color = RGB(50, 101, 126)
+        .RowHeight = 46
+        .Borders(xlEdgeBottom).LineStyle = xlContinuous
+        .Borders(xlEdgeBottom).color = RGB(0, 0, 0) ' Black color
+        .Borders(xlEdgeBottom).TintAndShade = 0
+        .Borders(xlEdgeBottom).Weight = xlThick
+    End With
+    
+    ' Fill the background from column B to W in row 6 with color #D5D9DD
+    ws.Range("B6:W6").Interior.color = RGB(213, 217, 221) ' #D5D9DD
+    
+    ' In row 7, from column B to W, change the fill color, font size, row height, alignment, and font color
+    With ws.Range("B7:W7")
+        .Interior.color = RGB(50, 101, 126) ' #32657E
+        .Font.Size = 12
+        .Font.color = RGB(255, 255, 255) ' White
+        .RowHeight = 40 ' Approximately 40 pixels
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' AutoFit the columns in the specified range
+    ws.Range("B7:W7").Columns.AutoFit
+    
+    ' Now add the border to a specific range
+    Dim rng As Range
+    Set rng = ws.Range("B6:W6") ' Specify your range here
+    
+    ' Adding outside borders to the range
+    With rng.Borders(xlEdgeLeft)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeRight)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+    End With
+    
+    With rng.WrapText = True
+    End With
+    
+    ActiveWindow.FreezePanes = False
+    
+    ActiveWindow.SplitColumn = 3
+    ActiveWindow.SplitRow = 7
+    
+    ActiveWindow.FreezePanes = True
+    
+    ActiveWindow.DisplayGridlines = False
+    
+    ' Clean up
+    Set ws = Nothing
+
+    Application.ScreenUpdating = True ' Re-enable screen updating
+    Application.Calculation = xlCalculationAutomatic ' Re-enable automatic calculation
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+
+Sub FourAddBordersToDataRange_PVU()
+    Dim lastRow As Long, lastCol As Long
+    Dim startRow As Long
+    Dim col As Long, row As Long
+    Dim ws As Worksheet
+    Dim targetRange As Range
+    Dim finalName As String
+    
+    Set ws = ActiveSheet
+
+    finalName = "Deployment Details - PVU"
+    ws.Name = finalName
+
+    On Error GoTo CleanExit ' Error handling to ensure screen updates and calculations are reset
+
+    ' Starting row
+    startRow = 7
+
+    ' Find the last row with data starting from row 7
+    lastRow = ws.Cells(ws.Rows.Count, 2).End(xlUp).row
+
+    ' Find the last column with data starting from row 7
+    lastCol = ws.Cells(startRow, ws.Columns.Count).End(xlToLeft).Column
+
+    ' Exit if there are no rows with data beyond the start row
+    If lastRow < startRow Or lastCol < 2 Then GoTo CleanExit
+
+    Application.ScreenUpdating = False ' Improve performance by disabling screen updating
+    Application.Calculation = xlCalculationManual ' Disable automatic calculation
+    Application.DisplayStatusBar = False
+    Application.EnableEvents = False
+
+    ' Add left border to the leftmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, 2).Value <> "" Then
+            With ws.Cells(row, 2).Borders(xlEdgeLeft)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    ' Add right border to the rightmost column with data starting from row 7
+    For row = startRow To lastRow
+        If ws.Cells(row, lastCol).Value <> "" Then
+            With ws.Cells(row, lastCol).Borders(xlEdgeRight)
+                .LineStyle = xlContinuous
+                .Weight = xlThin
+            End With
+        End If
+    Next row
+
+    Set targetRange = ws.Range("B" & lastRow & ":V" & lastRow)
+
+    ' Add bottom border to the bottommost row with data
+    With targetRange.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .ColorIndex = 0
+        .TintAndShade = 0
+        .Weight = xlThin
+    End With
+
+CleanExit:
+    ' Reset application settings
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.DisplayStatusBar = True
+    Application.EnableEvents = True
+End Sub
+
+
+Sub ThreeInsertTwoUserDates_PVU()
+    Dim startDate As Variant
+    Dim endDate As Variant
+    Dim ws As Worksheet
+    
+    Set ws = ActiveSheet
+    
+    ' Prompt the user to input the start date
+    startDate = InputBox("Please enter the start date (format: MM/DD/YYYY):")
+    
+    ' Check if the user canceled the input box or didn't input a date
+    If startDate = "" Then
+        MsgBox "No start date entered. Operation canceled."
+        Exit Sub
+    End If
+    
+    ' Validate the start date
+    If Not IsDate(startDate) Then
+        MsgBox "Invalid start date format. Please enter a valid date."
+        Exit Sub
+    End If
+    
+    ' Prompt the user to input the end date
+    endDate = InputBox("Please enter the end date (format: MM/DD/YYYY):")
+    
+    ' Check if the user canceled the input box or didn't input a date
+    If endDate = "" Then
+        MsgBox "No end date entered. Operation canceled."
+        Exit Sub
+    End If
+    
+    ' Validate the end date
+    If Not IsDate(endDate) Then
+        MsgBox "Invalid end date format. Please enter a valid date."
+        Exit Sub
+    End If
+    
+   ' Insert the start date into cell C4
+    ws.Cells(4, "C").Value = CDate(startDate)
+    ' Insert the end date into cell C5
+    ws.Cells(5, "C").Value = CDate(endDate)
+        ' Format the cells to display the dates in a specific format
+    ws.Cells(4, "C").NumberFormat = "d-mmm-yy"
+    ws.Cells(5, "C").NumberFormat = "d-mmm-yy"
+
+    
+    ' Insert labels into cells B4 and B5
+    ws.Cells(4, "B").Value = "Report Start Date:"
+    ws.Cells(5, "B").Value = "Report End Date:"
+    
+    ' Align labels to the right
+    ws.Cells(4, "B").HorizontalAlignment = xlRight
+    ws.Cells(5, "B").HorizontalAlignment = xlRight
+    
+    ' Align dates to the left
+    ws.Cells(4, "C").HorizontalAlignment = xlLeft
+    ws.Cells(5, "C").HorizontalAlignment = xlLeft
+    
+    MsgBox "Dates inserted and formatted successfully!"
+End Sub
+
+Sub FiveMergeAndCenterCells_PVU()
+    Dim mergeRange As Range
+    On Error Resume Next ' Enable error handling
+    Dim ws As Worksheet
+
+    Set ws = ActiveSheet
+    
+    ' Merge and center cells B6:C6 with text "Product Details"
+    Set mergeRange = ws.Range("B6:C6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Product Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells D6:K6 with text "Server Details"
+    Set mergeRange = ws.Range("D6:K6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Server Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells L6:U6 with text "Computer Details"
+    Set mergeRange = ws.Range("L6:U6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Computer Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    ' Merge and center cells V6:W6 with text "Software Details"
+    Set mergeRange = ws.Range("V6:W6")
+    If Not mergeRange Is Nothing Then
+        With mergeRange
+            .Merge
+            .Value = "Software Details"
+            .HorizontalAlignment = xlCenter
+            .VerticalAlignment = xlCenter
+            .Borders(xlEdgeLeft).LineStyle = xlContinuous ' Add left border
+            .Borders(xlEdgeRight).LineStyle = xlContinuous ' Add right border
+        End With
+    End If
+
+    On Error GoTo 0 ' Disable error handling
+End Sub
+
+Sub ApplyLeftBorderToColumn_PVU(columnLetter As String, startRow As Long)
+    Dim lastRow As Long
+    Dim targetRange As Range
+    Dim ws As Worksheet
+    
+    Set ws = ActiveSheet
+
+    ' Find the last row in the specified column
+    lastRow = ws.Cells(ws.Rows.Count, columnLetter).End(xlUp).row
+    
+    ' Set the target range
+    Set targetRange = ws.Range(columnLetter & startRow & ":" & columnLetter & lastRow)
+    
+    ' Apply right border to the target range
+    targetRange.Borders(xlEdgeLeft).LineStyle = xlContinuous
+End Sub
+
+Sub ApplyBordersToColumns_PVU()
+    ApplyLeftBorderToColumn_PVU "D", 8
+    ApplyLeftBorderToColumn_PVU "L", 8
+    ApplyLeftBorderToColumn_PVU "V", 8
+End Sub
+
+
+Sub RemoveAllBorders_PVU(newWs)
+    Dim ws As Worksheet
+    Dim cell As Range
+    
+    ' Reference the active worksheet
+    Set ws = ActiveSheet
+    
+    ' Loop through each cell in the worksheet
+    For Each cell In ws.UsedRange
+        ' Clear the borders of the cell
+        cell.Borders.LineStyle = xlNone
+    Next cell
+End Sub
+
+Sub CenterColumnsAndRenameSheet_PVU()
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim col As Range
+    Dim columnsToCenter As Variant
+    Dim i As Integer
+    
+    ' Define the active worksheet
+    Set ws = ActiveSheet
+    
+    ' Define the columns to center
+    columnsToCenter = Array("C", "F", "G", "H", "I", "J", "K", "N", "O", "U", "W") ' Update with your specific columns
+
+    ' Find the last row with data
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).row
+    
+    ' Loop through the defined columns and center align them
+    For i = LBound(columnsToCenter) To UBound(columnsToCenter)
+        Set col = ws.Range(columnsToCenter(i) & "8:" & columnsToCenter(i) & lastRow)
+        col.HorizontalAlignment = xlCenter
+    Next i
+
+    ' Rename the worksheet
+    ws.Name = "Deployment Details - PVU"
+End Sub
+
+
